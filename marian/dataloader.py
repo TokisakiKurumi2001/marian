@@ -6,7 +6,7 @@ from torch import Tensor
 from typing import List, Tuple
 from transformers import MarianTokenizer
 
-class MarianMTDataLoader:
+class MarianOTDataLoader:
     def __init__(self, pretrained_ck: str, max_length: int):
         dataset = load_dataset('kde4', lang1='en', lang2='fr').remove_columns('id')
         dataset = dataset['train'].train_test_split(train_size=0.9, seed=42)
@@ -43,7 +43,17 @@ class MarianMTDataLoader:
             padding='max_length',
             truncation=True,
             return_tensors='pt')
-        tok['decoder_input_ids'] = self.__shift_tokens_right(tok['labels'], 59513, 59513)
+        _tok = self.tokenizer(
+            encoded_inputs['en'],
+            text_target=encoded_inputs['en'],
+            max_length=self.max_length,
+            padding='max_length',
+            truncation=True,
+            return_tensors='pt')
+        tok['tsl_labels'] = tok.pop('labels')
+        tok['tsl_decoder_input_ids'] = self.__shift_tokens_right(tok['tsl_labels'], 59513, 59513)
+        tok['tgt_labels'] = _tok.pop('labels')
+        tok['tgt_decoder_input_ids'] = self.__shift_tokens_right(tok['tgt_labels'], 59513, 59513)
         
         return tok
 

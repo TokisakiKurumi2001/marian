@@ -6,7 +6,7 @@ from transformers import MarianTokenizer, MarianConfig, MarianMTModel
 import evaluate
 import numpy as np
 
-class LitMarianMT(pl.LightningModule):
+class LitMarianOT(pl.LightningModule):
     def __init__(self, pretrained_ck: str):
         super(LitMarianMT, self).__init__()
         config = MarianConfig.from_pretrained(pretrained_ck)
