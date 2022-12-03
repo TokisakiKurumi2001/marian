@@ -43,12 +43,8 @@ class MarianOTPreTrainedModel(PreTrainedModel):
 class CombineSeq2SeqLMOutput:
     tgt: Seq2SeqLMOutput
     tsl: Seq2SeqLMOutput
-    tgt_last_hidden_state: torch.Tensor
-    tsl_last_hidden_state: torch.Tensor
 
 class MarianOT(MarianOTPreTrainedModel):
-    _keys_to_ignore_on_load_missing = ["encoder.embed_tokens.weight", "tsl_decoder.embed_tokens.weight", "tgt_decoder.embed_tokens.weight"]
-
     def __init__(self, config: MarianOTConfig):
         super().__init__(config)
 
@@ -66,10 +62,10 @@ class MarianOT(MarianOTPreTrainedModel):
 
         self.encoder = MarianEncoder(config, encoder_embed_tokens)
         self.tgt_decoder = MarianDecoder(config, decoder_embed_tokens)
+        self.tgt_lm_head = nn.Linear(config.d_model, config.vocab_size, bias=True)
         self.tsl_decoder = MarianDecoder(config, decoder_embed_tokens)
         self.tsl_lm_head = nn.Linear(config.d_model, config.vocab_size, bias=True)
-        self.tgt_lm_head = nn.Linear(config.d_model, config.vocab_size, bias=True)
-
+        
         self.translate_self_flag = False
 
         # Initialize weights and apply final processing
@@ -272,9 +268,7 @@ class MarianOT(MarianOTPreTrainedModel):
 
         return CombineSeq2SeqLMOutput(
             tgt=tgt_lm_output,
-            tsl=tsl_lm_output,
-            tgt_last_hidden_state=tgt_outputs[0],
-            tsl_last_hidden_state=tsl_outputs[0]
+            tsl=tsl_lm_output
         )
 
     def forward(
@@ -290,11 +284,30 @@ class MarianOT(MarianOTPreTrainedModel):
         past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None,
         inputs_embeds: Optional[torch.FloatTensor] = None,
         decoder_inputs_embeds: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
         use_cache: Optional[bool] = None,
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-    ) -> Seq2SeqModelOutput:
+    ) -> Seq2SeqLMOutput:
+        r"""
+        labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+            Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+            config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+            (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+        Returns:
+        """
+        return_dict = return_dict if return_dict is not None else self.config.use_return_dict
+
+        if labels is not None:
+            if use_cache:
+                logger.warning("The `use_cache` argument is changed to `False` since `labels` is provided.")
+            use_cache = False
+            if decoder_input_ids is None and decoder_inputs_embeds is None:
+                decoder_input_ids = shift_tokens_right(
+                    labels, self.config.pad_token_id, self.config.decoder_start_token_id
+                )
+
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
             output_hidden_states if output_hidden_states is not None else self.config.output_hidden_states
@@ -320,36 +333,28 @@ class MarianOT(MarianOTPreTrainedModel):
                 attentions=encoder_outputs[2] if len(encoder_outputs) > 2 else None,
             )
 
+        # decoder outputs consists of (dec_features, past_key_value, dec_hidden, dec_attn)
         if self.translate_self_flag:
-            decoder_outputs = self.tgt_decoder(
-                input_ids=decoder_input_ids,
-                attention_mask=decoder_attention_mask,
-                encoder_hidden_states=encoder_outputs[0],
-                encoder_attention_mask=attention_mask,
-                head_mask=decoder_head_mask,
-                cross_attn_head_mask=cross_attn_head_mask,
-                past_key_values=past_key_values,
-                inputs_embeds=decoder_inputs_embeds,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-            )
+            decoder_fn = self.tgt_decoder
+            lm_fn = self.tgt_lm_head
         else:
-            decoder_outputs = self.tsl_decoder(
-                input_ids=decoder_input_ids,
-                attention_mask=decoder_attention_mask,
-                encoder_hidden_states=encoder_outputs[0],
-                encoder_attention_mask=attention_mask,
-                head_mask=decoder_head_mask,
-                cross_attn_head_mask=cross_attn_head_mask,
-                past_key_values=past_key_values,
-                inputs_embeds=decoder_inputs_embeds,
-                use_cache=use_cache,
-                output_attentions=output_attentions,
-                output_hidden_states=output_hidden_states,
-                return_dict=return_dict,
-            )
+            decoder_fn = self.tsl_decoder
+            lm_fn = self.tsl_lm_head
+
+        decoder_outputs = decoder_fn(
+            input_ids=decoder_input_ids,
+            attention_mask=decoder_attention_mask,
+            encoder_hidden_states=encoder_outputs[0],
+            encoder_attention_mask=attention_mask,
+            head_mask=decoder_head_mask,
+            cross_attn_head_mask=cross_attn_head_mask,
+            past_key_values=past_key_values,
+            inputs_embeds=decoder_inputs_embeds,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
 
         outputs = Seq2SeqModelOutput(
             last_hidden_state=decoder_outputs.last_hidden_state,
@@ -361,14 +366,13 @@ class MarianOT(MarianOTPreTrainedModel):
             encoder_hidden_states=encoder_outputs.hidden_states,
             encoder_attentions=encoder_outputs.attentions,
         )
+        
+        lm_logits = lm_fn(outputs[0])
 
-        if self.translate_self_flag:
-            lm_logits = self.tgt_lm_head(outputs[0])
-        else:
-            lm_logits = self.tsl_lm_head(outputs[0])
+        masked_lm_loss = None
 
         return Seq2SeqLMOutput(
-            loss=None,
+            loss=masked_lm_loss,
             logits=lm_logits,
             past_key_values=outputs.past_key_values,
             decoder_hidden_states=outputs.decoder_hidden_states,
@@ -406,6 +410,10 @@ class MarianOT(MarianOTPreTrainedModel):
             "cross_attn_head_mask": cross_attn_head_mask,
             "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
         }
+
+    def adjust_logits_during_generation(self, logits, cur_len):
+        logits[:, self.config.pad_token_id] = float("-inf")  # never predict pad token.
+        return logits
 
     @staticmethod
     def _reorder_cache(past, beam_idx):

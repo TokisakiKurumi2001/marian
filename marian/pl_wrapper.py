@@ -2,19 +2,21 @@ import torch
 import torch.nn as nn
 import pytorch_lightning as pl
 from typing import List
-from transformers import MarianTokenizer, MarianConfig, MarianMTModel
+from transformers import MarianTokenizer
+from marian import MarianOT, MarianOTConfig
 import evaluate
 import numpy as np
 
 class LitMarianOT(pl.LightningModule):
     def __init__(self, pretrained_ck: str):
-        super(LitMarianMT, self).__init__()
-        config = MarianConfig.from_pretrained(pretrained_ck)
-        self.model = MarianMTModel(config)
+        super(LitMarianOT, self).__init__()
+        config = MarianOTConfig.from_pretrained(pretrained_ck)
+        self.model = MarianOT(config)
         self.tokenizer = MarianTokenizer.from_pretrained(pretrained_ck)
         self.vocab_size = self.tokenizer.vocab_size
         self.loss = nn.CrossEntropyLoss()
-        self.metric = evaluate.load('sacrebleu')
+        self.metric_tgt = evaluate.load('sacrebleu')
+        self.metric_tsl = evaluate.load('sacrebleu')
         self.save_hyperparameters()
 
     def export_model(self, path):
@@ -36,24 +38,36 @@ class LitMarianOT(pl.LightningModule):
         return decoded_preds, decoded_labels
 
     def training_step(self, batch, batch_idx):
-        labels = batch.pop('labels')
-        labels = labels.reshape(-1).long()
-        logits = self.model(**batch).logits
-        logits = logits.reshape(-1, self.vocab_size)
-        loss = self.loss(logits, labels)
-        self.log("train/loss", loss, on_epoch=True, on_step=False, sync_dist=True)
+        tsl_labels = batch.pop('tsl_labels').reshape(-1).long()
+        tgt_labels = batch.pop('tgt_labels').reshape(-1).long()
+
+        res = self.model.forward_pass(**batch)
+        tgt_logits = res.tgt.logits.reshape(-1, self.vocab_size)
+        tsl_logits = res.tsl.logits.reshape(-1, self.vocab_size)
+        tgt_loss = self.loss(tgt_logits, tgt_labels)
+        tsl_loss = self.loss(tsl_logits, tsl_labels)
+        loss = tgt_loss + tsl_loss
+        self.log("train/loss", loss, sync_dist=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
-        labels = batch.pop('labels')
-        preds = self.model.generate(batch['input_ids'], max_length=128, num_beams=4)
-        decoded_preds, decoded_labels = self.__postprocess(preds, labels)
-        self.metric.add_batch(predictions=decoded_preds, references=decoded_labels)
+        tsl_labels = batch.pop('tsl_labels')
+        preds_tsl = self.model.generate(batch['input_ids'], max_length=128, num_beams=4)
+        decoded_preds, decoded_labels = self.__postprocess(preds_tsl, tsl_labels)
+        self.metric_tsl.add_batch(predictions=decoded_preds, references=decoded_labels)
+
+        tgt_labels = batch.pop('tgt_labels')
+        with self.model.translate_self():
+            preds_tgt = self.model.generate(batch['input_ids'], max_length=128, num_beams=4)
+            decoded_preds, decoded_labels = self.__postprocess(preds_tgt, tgt_labels)
+            self.metric_tgt.add_batch(predictions=decoded_preds, references=decoded_labels)
 
     def validation_epoch_end(self, outputs):
-        results = self.metric.compute()
-        self.log('valid/bleu', results['score'], on_epoch=True, on_step=False, sync_dist=True)
+        results = self.metric_tgt.compute()
+        self.log('valid/bleu_tgt', results['score'], on_epoch=True, on_step=False, sync_dist=True)
+        results = self.metric_tsl.compute()
+        self.log('valid/bleu_tsl', results['score'], on_epoch=True, on_step=False, sync_dist=True)
         
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=5e-5)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=3e-5)
         return optimizer
