@@ -6,7 +6,7 @@ from torch import Tensor
 from typing import List, Tuple
 from transformers import MarianTokenizer
 
-class MarianOTDataLoader:
+class ComproMarDataLoader:
     def __init__(self, pretrained_ck: str, max_length: int):
         dataset = load_dataset('kde4', lang1='en', lang2='fr').remove_columns('id')
         dataset = dataset['train'].train_test_split(train_size=0.9, seed=42)

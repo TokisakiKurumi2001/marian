@@ -3,18 +3,19 @@ import torch.nn as nn
 import pytorch_lightning as pl
 from typing import List
 from transformers import MarianTokenizer
-from marian import MarianOT, MarianOTConfig
+from compromise_marian import ComproMarModel, ComproMarConfig
 import evaluate
 import numpy as np
 
-class LitMarianOT(pl.LightningModule):
-    def __init__(self, pretrained_ck: str):
-        super(LitMarianOT, self).__init__()
-        config = MarianOTConfig.from_pretrained(pretrained_ck)
-        self.model = MarianOT(config)
+class LitComproMar(pl.LightningModule):
+    def __init__(self, pretrained_ck: str, lr: float):
+        super(LitComproMar, self).__init__()
+        config = ComproMarConfig.from_pretrained(pretrained_ck)
+        self.model = ComproMarModel(config)
         self.tokenizer = MarianTokenizer.from_pretrained(pretrained_ck)
         self.vocab_size = self.tokenizer.vocab_size
         self.loss = nn.CrossEntropyLoss()
+        self.lr = lr
         self.metric_tgt = evaluate.load('sacrebleu')
         self.metric_tsl = evaluate.load('sacrebleu')
         self.save_hyperparameters()
@@ -69,5 +70,5 @@ class LitMarianOT(pl.LightningModule):
         self.log('valid/bleu_tsl', results['score'], on_epoch=True, on_step=False, sync_dist=True)
         
     def configure_optimizers(self):
-        optimizer = torch.optim.AdamW(self.parameters(), lr=3e-5)
+        optimizer = torch.optim.AdamW(self.parameters(), lr=self.lr)
         return optimizer

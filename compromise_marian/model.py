@@ -6,11 +6,11 @@ from typing import List, Union, Optional, Tuple, Dict
 from transformers.modeling_outputs import BaseModelOutput, Seq2SeqModelOutput, Seq2SeqLMOutput
 from contextlib import contextmanager
 from dataclasses import dataclass
-from marian import MarianOTConfig
+from compromise_marian import ComproMarConfig
 
-class MarianOTPreTrainedModel(PreTrainedModel):
-    config_class = MarianOTConfig
-    base_model_prefix = "marian_ot"
+class ComproMarPreTrainedModel(PreTrainedModel):
+    config_class = ComproMarConfig
+    base_model_prefix = "compromise_marian"
     supports_gradient_checkpointing = True
 
     def _init_weights(self, module: Union[nn.Linear, nn.Embedding]):
@@ -44,8 +44,8 @@ class CombineSeq2SeqLMOutput:
     tgt: Seq2SeqLMOutput
     tsl: Seq2SeqLMOutput
 
-class MarianOT(MarianOTPreTrainedModel):
-    def __init__(self, config: MarianOTConfig):
+class ComproMarModel(ComproMarPreTrainedModel):
+    def __init__(self, config: ComproMarConfig):
         super().__init__(config)
 
         padding_idx, vocab_size = config.pad_token_id, config.vocab_size
